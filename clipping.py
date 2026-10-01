@@ -7,15 +7,12 @@
 import html as html_lib
 import json
 import os
+import base64
 import re
-import smtplib
 import sys
 import unicodedata
 import urllib.parse
 from datetime import datetime, timezone
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
 
 import feedparser
@@ -28,14 +25,14 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 # CONFIGURAÇÕES
 # ============================================================
 
-# A senha NUNCA fica no código: vem da variável de ambiente CLIPPING_EMAIL_SENHA
 EMAIL_REMETENTE = os.environ.get("CLIPPING_EMAIL_REMETENTE", "tyton@tytoncapital.com.br")
-EMAIL_SENHA = os.environ.get("CLIPPING_EMAIL_SENHA")
 EMAIL_DESTINO = os.environ.get("CLIPPING_EMAIL_DESTINO", "asset@tytoncapital.com.br")
 
-# Microsoft 365 (Outlook)
-SMTP_SERVIDOR = os.environ.get("CLIPPING_SMTP_SERVIDOR", "smtp.office365.com")
-SMTP_PORTA = int(os.environ.get("CLIPPING_SMTP_PORTA", "587"))
+# Envio pelo Microsoft Graph (HTTPS). As credenciais NUNCA ficam no código:
+# vêm das variáveis de ambiente, criadas pela TI no Azure (app com permissão Mail.Send)
+GRAPH_TENANT_ID = os.environ.get("CLIPPING_TENANT_ID")
+GRAPH_CLIENT_ID = os.environ.get("CLIPPING_CLIENT_ID")
+GRAPH_CLIENT_SECRET = os.environ.get("CLIPPING_CLIENT_SECRET")
 
 FUSO = ZoneInfo("America/Sao_Paulo")
 
@@ -260,22 +257,50 @@ def salvar_excel(df_novas, hoje_str):
     wb.save(CAMINHO_EXCEL)
 
 
+def obter_token_graph():
+    r = requests.post(
+        f"https://login.microsoftonline.com/{GRAPH_TENANT_ID}/oauth2/v2.0/token",
+        data={
+            "client_id": GRAPH_CLIENT_ID,
+            "client_secret": GRAPH_CLIENT_SECRET,
+            "scope": "https://graph.microsoft.com/.default",
+            "grant_type": "client_credentials",
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()["access_token"]
+
+
 def enviar_email(html, agora):
-    msg = MIMEMultipart()
-    msg["Subject"] = f"Tyton: Clipping {agora.strftime('%d/%m/%Y')} ({agora.strftime('%Hh%M')})"
-    msg["From"] = EMAIL_REMETENTE
-    msg["To"] = EMAIL_DESTINO
-    msg.attach(MIMEText(html, "html", "utf-8"))
-
     with open(CAMINHO_EXCEL, "rb") as f:
-        anexo = MIMEApplication(f.read(), Name="Noticias_Diarias.xlsx")
-    anexo["Content-Disposition"] = 'attachment; filename="Noticias_Diarias.xlsx"'
-    msg.attach(anexo)
+        anexo_b64 = base64.b64encode(f.read()).decode()
 
-    with smtplib.SMTP(SMTP_SERVIDOR, SMTP_PORTA, timeout=30) as server:
-        server.starttls()
-        server.login(EMAIL_REMETENTE, EMAIL_SENHA)
-        server.send_message(msg)
+    mensagem = {
+        "message": {
+            "subject": f"Tyton: Clipping {agora.strftime('%d/%m/%Y')} ({agora.strftime('%Hh%M')})",
+            "body": {"contentType": "HTML", "content": html},
+            "toRecipients": [
+                {"emailAddress": {"address": e.strip()}}
+                for e in EMAIL_DESTINO.split(",") if e.strip()
+            ],
+            "attachments": [{
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": "Noticias_Diarias.xlsx",
+                "contentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "contentBytes": anexo_b64,
+            }],
+        },
+        "saveToSentItems": True,
+    }
+    r = requests.post(
+        f"https://graph.microsoft.com/v1.0/users/{EMAIL_REMETENTE}/sendMail",
+        headers={"Authorization": f"Bearer {obter_token_graph()}"},
+        json=mensagem,
+        timeout=60,
+    )
+    if r.status_code != 202:
+        raise RuntimeError(f"Graph recusou o envio ({r.status_code}): {r.text}")
 
 
 # ============================================================
@@ -284,8 +309,14 @@ def enviar_email(html, agora):
 
 
 def main():
-    if not EMAIL_SENHA:
-        sys.exit("❌ Variável de ambiente CLIPPING_EMAIL_SENHA não definida.")
+    # --previa: coleta e gera o HTML em dados/previa.html, sem enviar nem gravar histórico
+    previa = "--previa" in sys.argv
+    faltando = [
+        v for v in ("CLIPPING_TENANT_ID", "CLIPPING_CLIENT_ID", "CLIPPING_CLIENT_SECRET")
+        if not os.environ.get(v)
+    ]
+    if faltando and not previa:
+        sys.exit(f"❌ Variáveis de ambiente não definidas: {', '.join(faltando)}")
 
     os.makedirs(PASTA_DADOS, exist_ok=True)
     agora = datetime.now(FUSO)
@@ -334,6 +365,12 @@ def main():
 
     novos_titulos = set(df["titulo_normalizado"])
     df = df.drop(columns=["titulo_normalizado"])
+
+    if previa:
+        with open(os.path.join(PASTA_DADOS, "previa.html"), "w", encoding="utf-8") as f:
+            f.write(montar_html(df, agora))
+        print(f"👀 Prévia com {len(df)} notícias salva em dados/previa.html (nada enviado).")
+        return
 
     # ---------- EXCEL + EMAIL ----------
     salvar_excel(df, hoje_str)
