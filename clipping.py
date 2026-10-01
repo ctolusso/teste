@@ -186,52 +186,83 @@ def buscar_rss(query, hoje):
     return entradas
 
 
+MESES = ["JAN", "FEV", "MAR", "ABR", "MAI", "JUN", "JUL", "AGO", "SET", "OUT", "NOV", "DEZ"]
+
+# Paleta do modelo de e-mail da Tyton
+COR_VERDE = "#2a3e32"
+COR_LINHA = "#c9d3cd"
+COR_ZEBRA = "#f2f4f3"
+COR_FUNDO = "#eef1ef"
+FONTE = "'Segoe UI',Calibri,Arial,sans-serif"
+
+
 def montar_html(df, agora):
-    html = f"""
-<html>
-<body style="font-family:Calibri,Arial,sans-serif; font-size:11pt; color:#222; background:#fff; margin:0; padding:0;">
-<div style="max-width:680px; margin:0 auto; padding:16px;">
-<h2 style="color:#1a3a5c; border-bottom:2px solid #1a3a5c; padding-bottom:6px; margin-bottom:20px;">
-Tyton &nbsp;|&nbsp; Clipping {agora.strftime('%d/%m/%Y')} &nbsp;|&nbsp; {agora.strftime('%Hh%M')}
-</h2>
-"""
-    for emissor, grupo in df.groupby("Emissor"):
-        noticias_html = ""
-        for _, row in grupo.iterrows():
-            noticias_html += (
-                f'<div style="margin-bottom:8px;">'
-                f'&bull; <b>{html_lib.escape(row["Título"])}</b><br>'
-                f'<a href="{row["Link"]}" style="color:#1a3a5c; font-size:10pt;">'
-                f'{html_lib.escape(row["Fonte"])}</a>'
-                f'</div>'
-            )
-        html += f"""
-<table width="100%" cellpadding="0" cellspacing="0"
-       style="margin-bottom:18px; border-collapse:collapse;">
-  <tr>
-    <td style="background:#1a3a5c; color:#ffffff; font-weight:bold;
-               font-size:13pt; padding:7px 14px;
-               border-radius:4px 4px 0 0; letter-spacing:0.5px;">
-      &#9646; {html_lib.escape(emissor)}
-    </td>
-  </tr>
-  <tr>
-    <td style="background:#f4f7fa; border:1px solid #c8d3df;
-               border-top:none; padding:10px 14px;
-               border-radius:0 0 4px 4px; line-height:1.8;">
-      {noticias_html}
-    </td>
-  </tr>
+    data_cab = f"{agora.day:02d} {MESES[agora.month - 1]} {agora.year} &nbsp;·&nbsp; {agora:%Hh%M}"
+    n_emissores = df["Emissor"].nunique()
+    plural = "s" if len(df) != 1 else ""
+
+    secoes = ""
+    for i, (emissor, grupo) in enumerate(df.groupby("Emissor"), start=1):
+        linhas = ""
+        for j, (_, row) in enumerate(grupo.iterrows()):
+            fundo = COR_ZEBRA if j % 2 == 0 else "#ffffff"
+            # O Google News repete a fonte no fim do título; ela já aparece no link abaixo
+            titulo = row["Título"]
+            sufixo = f" - {row['Fonte']}"
+            if titulo.endswith(sufixo):
+                titulo = titulo[: -len(sufixo)]
+            linhas += f"""
+<tr>
+  <td style="background:{fundo}; padding:10px 14px; border-bottom:1px solid #e3e8e5;">
+    <div style="font-size:10.5pt; font-weight:600; color:#222; line-height:1.45;">{html_lib.escape(titulo)}</div>
+    <a href="{row["Link"]}" style="font-size:9pt; color:{COR_VERDE}; text-decoration:underline;">{html_lib.escape(row["Fonte"])}</a>
+  </td>
+</tr>"""
+        secoes += f"""
+<tr><td style="padding:22px 32px 0 32px;">
+  <div style="font-size:8.5pt; font-weight:700; letter-spacing:1.5px; color:#333;
+              padding-bottom:6px; border-bottom:1px solid {COR_LINHA};">
+    {i:02d} &nbsp;·&nbsp; {html_lib.escape(emissor).upper()}
+  </div>
+</td></tr>
+<tr><td style="padding:8px 16px 0 16px;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">{linhas}
+  </table>
+</td></tr>"""
+
+    return f"""<html>
+<body style="margin:0; padding:0; background:{COR_FUNDO}; font-family:{FONTE}; color:#222;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:{COR_FUNDO};">
+<tr><td align="center" style="padding:24px 12px;">
+<table width="640" cellpadding="0" cellspacing="0" style="max-width:640px; width:100%; background:#ffffff; border-collapse:collapse;">
+
+<tr><td style="background:{COR_VERDE}; padding:24px 32px;">
+  <table width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td style="color:#ffffff; font-size:13pt; font-weight:700; letter-spacing:4px;">TYTON CAPITAL</td>
+    <td align="right" style="color:#d9e2dc; font-size:8.5pt; letter-spacing:1px;">CLIPPING DIÁRIO &nbsp;|&nbsp; {data_cab}</td>
+  </tr></table>
+</td></tr>
+
+<tr><td style="padding:28px 32px 0 32px; font-size:11pt; line-height:1.6;">
+  <p style="margin:0 0 12px 0;">Prezados,</p>
+  <p style="margin:0;">Segue o clipping com as notícias publicadas hoje sobre os emissores da carteira:
+  <b>{len(df)} notícia{plural}</b> de <b>{n_emissores} emissor{"es" if n_emissores != 1 else ""}</b>.</p>
+</td></tr>
+{secoes}
+
+<tr><td style="padding:24px 32px 28px 32px;">
+  <div style="font-size:8pt; color:#777; border-top:1px solid {COR_LINHA}; padding-top:10px; line-height:1.5;">
+    Notícias do Google News publicadas em {agora:%d/%m/%Y}. Cada envio traz só o que ainda não foi enviado.
+    A planilha com todas as notícias do dia segue em anexo.<br>
+    Gerado automaticamente · Tyton Capital
+  </div>
+</td></tr>
+
 </table>
-"""
-    html += """
-<p style="font-size:9pt; color:#888; margin-top:24px; border-top:1px solid #ddd; padding-top:8px;">
-Gerado automaticamente · Tyton Capital
-</p>
-</div>
+</td></tr>
+</table>
 </body></html>
 """
-    return html
 
 
 def salvar_excel(df_novas, hoje_str):
